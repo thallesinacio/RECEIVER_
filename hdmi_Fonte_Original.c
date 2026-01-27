@@ -9,7 +9,7 @@
 #include "hardware/vreg.h"
 #include "hardware/dma.h"
 
-// --- ESTES SÃO OS INCLUDES QUE FALTAVAM ---
+
 #include "hardware/clocks.h"          // Para set_sys_clock_khz
 #include "hardware/structs/bus_ctrl.h" // Para bus_ctrl_hw e prioridades
 // ------------------------------------------
@@ -64,7 +64,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     reset_usb_boot(0, 0);
 }
 
-// --- FUNÇÕES DE DESENHO (MANTIDAS) ---
+// --- FUNÇÕES DE DESENHO ---
 
 static inline void set_char(uint x, uint y, char c) {
     if (x >= CHAR_COLS || y >= CHAR_ROWS) return;
@@ -135,7 +135,7 @@ void parse_uart_data(char *line) {
     }
 }
 
-// --- CORE 1: VÍDEO (MANTIDO IGUAL) ---
+// --- CORE 1: VÍDEO ---
 void core1_main() {
     dvi_register_irqs_this_core(&dvi0, DMA_IRQ_0);
     dvi_start(&dvi0);
@@ -166,7 +166,7 @@ int __not_in_flash("main") main() {
     // 1. Configura Clock para DVI
     set_sys_clock_khz(DVI_TIMING.bit_clk_khz, true);
 
-    // 2. Configura UART (Deve ser DEPOIS de configurar o clock do sistema!)
+    // 2. Configura UART 
     // O Sender envia no pino TX(GP0) -> Devemos ligar no RX(GP1) deste Pico
     // Mas a inicialização padrão usa uart0
     uart_init(UART_ID, BAUD_RATE);

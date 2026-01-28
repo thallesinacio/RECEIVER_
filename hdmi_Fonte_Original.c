@@ -12,8 +12,8 @@
 #include "hardware/structs/watchdog.h" // Acesso direto aos registradores scratch
 #include "pico/mutex.h" // Mutex para proteção de dados entre cores
 
-#include "hardware/clocks.h"          
-#include "hardware/structs/bus_ctrl.h" 
+#include "hardware/clocks.h"          // Para set_sys_clock_khz
+#include "hardware/structs/bus_ctrl.h" // Para bus_ctrl_hw e prioridades
 
 // --- INCLUDES DO DVI (PicoDVI) ---
 #include "dvi.h"
@@ -49,11 +49,12 @@
 #define COLOUR_PLANE_SIZE_WORDS (CHAR_ROWS * CHAR_COLS * 4 / 32)
 
 // --- VARIÁVEIS GLOBAIS DE DADOS ---
+// Armazenam os últimos valores recebidos para exibição
 float g_bmp_temp = 0.0f;
 float g_bmp_alt = 0.0f;
 float g_aht_temp = 0.0f;
 float g_aht_hum = 0.0f;
-char uart_buffer[128]; 
+char uart_buffer[128]; // Buffer para acumular a linha da UART
 int uart_pos = 0;
 
 // --- Variáveis Watchdog e Controle ---
@@ -72,7 +73,7 @@ void gpio_irq_handler(uint gpio, uint32_t events) {
     reset_usb_boot(0, 0);
 }
 
-// --- FUNÇÕES DE DESENHO ---
+// --- FUNÇÕES DE DESENHO (MANTIDAS) ---
 static inline void set_char(uint x, uint y, char c) {
     if (x >= CHAR_COLS || y >= CHAR_ROWS) return;
     charbuf[x + y * CHAR_COLS] = c;
@@ -92,6 +93,7 @@ static inline void set_colour(uint x, uint y, uint8_t fg, uint8_t bg) {
     }
 }
 
+// Função auxiliar para escrever strings na tela
 void draw_text(int x, int y, const char* text, uint8_t fg, uint8_t bg) {
     int len = strlen(text);
     for (int i = 0; i < len; ++i) {
@@ -100,6 +102,7 @@ void draw_text(int x, int y, const char* text, uint8_t fg, uint8_t bg) {
     }
 }
 
+// Limpa uma linha específica (para atualizar valores sem piscar a tela toda)
 void clear_line_area(int x, int y, int length, uint8_t bg) {
     for (int i = 0; i < length; ++i) {
         set_char(x + i, y, ' ');
@@ -109,7 +112,9 @@ void clear_line_area(int x, int y, int length, uint8_t bg) {
 
 void draw_border() {
     const uint8_t fg = 0x15; 
-    const uint8_t bg = 0x00; 
+    const uint8_t bg = 0x00; // Fundo preto para ficar mais limpo
+    
+    // Desenha bordas simples
     for (uint x = 0; x < CHAR_COLS; ++x) {
         set_char(x, 0, '='); set_colour(x, 0, fg, bg);
         set_char(x, CHAR_ROWS - 1, '='); set_colour(x, CHAR_ROWS - 1, fg, bg);
@@ -122,12 +127,19 @@ void draw_border() {
 
 // --- FUNÇÃO DE PROCESSAMENTO DE DADOS ---
 void parse_uart_data(char *line) {
-    float t, v2; 
+    float t, v2; // v2 será altitude ou umidade
+
+    // Tenta ler o formato exato do BMP
+    // Procura por "TB:" (Temp BMP) e "AL:" (Altitude)
     if (sscanf(line, "SENSOR:BMP280,TB:%f,AL:%f", &t, &v2) == 2) {
-        g_bmp_temp = t; g_bmp_alt = v2;
+        g_bmp_temp = t;
+        g_bmp_alt = v2;
     } 
+    // Tenta ler o formato exato do AHT
+    // Procura por "TA:" (Temp AHT) e "UM:" (Umidade)
     else if (sscanf(line, "SENSOR:AHT20,TA:%f,UM:%f", &t, &v2) == 2) {
-        g_aht_temp = t; g_aht_hum = v2;
+        g_aht_temp = t;
+        g_aht_hum = v2;
     }
 }
 
@@ -182,7 +194,9 @@ int __not_in_flash("main") main() {
     // 1. Configura Clock para DVI
     set_sys_clock_khz(DVI_TIMING.bit_clk_khz, true);
 
-    // 2. Configura UART 
+    // 2. Configura UART (Deve ser DEPOIS de configurar o clock do sistema!)
+    // O Sender envia no pino TX(GP0) -> Devemos ligar no RX(GP1) deste Pico
+    // Mas a inicialização padrão usa uart0
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
@@ -233,7 +247,7 @@ int __not_in_flash("main") main() {
     draw_text(10, 14, "  Temperatura:", 0x3f, 0x00);
     draw_text(10, 15, "  Umidade....:", 0x3f, 0x00);
 
-    // Instrução
+    // Testar Watchdog
     draw_text(10, 25, "CMD: 'KILL' p/ Teste", 0x15, 0x00);
 
     // Inicia Core 1
@@ -248,13 +262,13 @@ int __not_in_flash("main") main() {
     uint32_t last_wd_time = 0;
 
     while (true) {
-        // --- 1. LER UART ---
+        // --- 1. LER UART (Sem bloquear o vídeo) ---
         while (uart_is_readable(UART_ID)) {
             char c = uart_getc(UART_ID);
             
             if (c == '\n' || c == '\r') {
                 if (uart_pos > 0) {
-                    uart_buffer[uart_pos] = 0; 
+                    uart_buffer[uart_pos] = 0; // Finaliza string
 
                     // --- [COMANDO KILL] ---
                     // Se receber "KILL", trava o Core 0 propositalmente
@@ -263,8 +277,8 @@ int __not_in_flash("main") main() {
                         while(true); // Loop infinito -> Watchdog vai estourar
                     }
 
-                    parse_uart_data(uart_buffer); 
-                    uart_pos = 0; 
+                    parse_uart_data(uart_buffer); // Processa
+                    uart_pos = 0; // Reseta buffer
                 }
             } else {
                 if (uart_pos < 127) {
@@ -273,19 +287,29 @@ int __not_in_flash("main") main() {
             }
         }
 
-        // --- 2. ATUALIZAR TELA ---
+-
+        // Apenas atualiza os valores numéricos
+        
+        // BMP Temp
         sprintf(val_str, "%.2f C", g_bmp_temp);
-        draw_text(30, 8, val_str, 0x03, 0x00); set_colour(30, 8, 0x3F, 0x00); 
+        draw_text(30, 8, val_str, 0x03, 0x00); // Vermelho se quente, ou verde? Usando Verde (0x0C) ou outro
+        set_colour(30, 8, 0x3F, 0x00); // Branco para o valor
 
+        // BMP Alt
         sprintf(val_str, "%.2f m", g_bmp_alt);
-        clear_line_area(30, 9, 10, 0x00); draw_text(30, 9, val_str, 0x3F, 0x00);
+        clear_line_area(30, 9, 10, 0x00); // Limpa resíduo anterior
+        draw_text(30, 9, val_str, 0x3F, 0x00);
 
+        // AHT Temp
         sprintf(val_str, "%.2f C", g_aht_temp);
-        clear_line_area(30, 14, 10, 0x00); draw_text(30, 14, val_str, 0x3F, 0x00);
+        clear_line_area(30, 14, 10, 0x00);
+        draw_text(30, 14, val_str, 0x3F, 0x00);
 
+        // AHT Hum
         sprintf(val_str, "%.2f %%", g_aht_hum);
-        clear_line_area(30, 15, 10, 0x00); draw_text(30, 15, val_str, 0x3F, 0x00);
-
+        clear_line_area(30, 15, 10, 0x00);
+        draw_text(30, 15, val_str, 0x3F, 0x00);
+        
         // --- 3. LÓGICA WATCHDOG CROSS-CORE ---
         uint32_t now = to_ms_since_boot(get_absolute_time());
         

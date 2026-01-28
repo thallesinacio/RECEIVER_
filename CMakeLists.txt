@@ -78,6 +78,7 @@ target_link_libraries(hdmi
 	libdvi
 	hardware_adc
 	hardware_uart
+	hardware_watchdog
 )
 
 pico_add_extra_outputs(hdmi)
